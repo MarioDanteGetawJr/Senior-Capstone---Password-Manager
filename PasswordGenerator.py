@@ -1,9 +1,13 @@
+from Encryption import load_key, encrypt_password, decrypt_password
 import tkinter as tk
 from tkinter import messagebox, Toplevel
 import json
 import os
 import random
 import string
+
+# Load the encryption key
+key = load_key()
 
 def on_closing():
     sign_in_window.destroy()
@@ -73,15 +77,19 @@ def save_password():
     username = username_entry.get()
     account_username = master_username_entry.get()
     password = password_entry.get()
+    encrypted_pw = encrypt_password(password, key)
 
     if website and username and password:
-        data = {website: {"username": username, "password": password}}
+        data = {website: {"username": username, "password": encrypted_pw}}
         
         # Save to a local JSON file
         if os.path.exists("passwords_" + account_username + ".json"):
-            with open("passwords_" + account_username + ".json", "r") as file:
-                existing_data = json.load(file)
-                existing_data.update(data)
+            try:
+                with open("passwords_" + account_username + ".json", "r") as file:
+                    existing_data = json.load(file)
+            except json.JSONDecodeError:
+                existing_data = {}
+            existing_data.update(data)
         else:
             existing_data = data
 
@@ -126,10 +134,15 @@ def view_passwords():
     tk.Label(view_window, text="Saved Passwords", font=("Arial", 14, "bold")).pack(pady=5)
 
     for website, credentials in saved_data.items():
+        try:
+            decrypted_pw = decrypt_password(credentials["password"], key)
+        except Exception as e:
+            decrypted_pw = "Error decrypting"
+
         site_label = tk.Label(view_window, text=f"{website} - {credentials['username']}", font=("Arial", 10))
         site_label.pack()
 
-        copy_btn = tk.Button(view_window, text="Copy Password", command=lambda pw=credentials['password']: copy_to_clipboard(pw))
+        copy_btn = tk.Button(view_window, text="Copy Password", command=lambda pw=decrypted_pw: copy_to_clipboard(pw))
         copy_btn.pack(pady=2)
 
     tk.Button(view_window, text="Close", command=view_window.destroy).pack(pady=10)
