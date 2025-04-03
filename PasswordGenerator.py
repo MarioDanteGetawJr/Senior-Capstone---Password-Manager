@@ -5,9 +5,26 @@ import json
 import os
 import random
 import string
+import re
 
 # Load the encryption key
 key = load_key()
+
+def check_pass_strength(password):
+    #Check if length of password is at least 8
+    if(len(password) > 8):
+        #Check if the password contains at least 1 digit
+        if (re.search(r"\d", password) is not None):
+            #Check if the password contains an upper case
+            if (re.search(r"[A-Z]", password) is not None):
+                #Check if the password contains an lower case
+                if (re.search(r"[a-z]", password) is not None):
+                    #Check if the password contains a special character
+                    if (re.search(r"\W", password) is not None):
+                        return "pass"
+    messagebox.showwarning("Password strength is too low", "Your password must be at least 8 characters long and must have 1 number, 1 upper case letter, 1 lower case letter, and one special character")
+
+    return "fail"
 
 def on_closing():
     sign_in_window.destroy()
@@ -17,27 +34,28 @@ def create_account():
     username = master_username_entry.get()
     password = master_password_entry.get()
 
-    if username and password:
-        data = {username: password}
-        # data = {username: {"username": username, "password": password}}
+    if (check_pass_strength(password)=="pass"):
+        if username and password:
+            data = {username: password}
+            # data = {username: {"username": username, "password": password}}
 
-        # Save to a local JSON file
-        if os.path.exists("passManagerAccounts.json"):
-            with open("passManagerAccounts.json", "r") as file:
-                account_data = json.load(file)
-                account_data.update(data)
+            # Save to a local JSON file
+            if os.path.exists("passManagerAccounts.json"):
+                with open("passManagerAccounts.json", "r") as file:
+                    account_data = json.load(file)
+                    account_data.update(data)
+            else:
+                account_data = data
+            with open("passManagerAccounts.json", "w") as file:
+                json.dump(account_data, file, indent=4)
+
+            messagebox.showinfo("Success", "Accout Created successfully!")
+            window.deiconify()
+            master_password_entry.delete(0, tk.END)
+            sign_in_window.withdraw()
+
         else:
-            account_data = data
-        with open("passManagerAccounts.json", "w") as file:
-            json.dump(account_data, file, indent=4)
-
-        messagebox.showinfo("Success", "Accout Created successfully!")
-        window.deiconify()
-        master_password_entry.delete(0, tk.END)
-        sign_in_window.withdraw()
-
-    else:
-        messagebox.showwarning("Input Error", "All fields are required.")
+            messagebox.showwarning("Input Error", "All fields are required.")
 
 def sign_in():
     account_username = master_username_entry.get()
@@ -79,29 +97,31 @@ def save_password():
     password = password_entry.get()
     encrypted_pw = encrypt_password(password, key)
 
-    if website and username and password:
-        data = {website: {"username": username, "password": encrypted_pw}}
-        
-        # Save to a local JSON file
-        if os.path.exists("passwords_" + account_username + ".json"):
-            try:
-                with open("passwords_" + account_username + ".json", "r") as file:
-                    existing_data = json.load(file)
-            except json.JSONDecodeError:
-                existing_data = {}
-            existing_data.update(data)
+    if (check_pass_strength(password) == "pass"):
+
+        if website and username and password:
+            data = {website: {"username": username, "password": encrypted_pw}}
+            
+            # Save to a local JSON file
+            if os.path.exists("passwords_" + account_username + ".json"):
+                try:
+                    with open("passwords_" + account_username + ".json", "r") as file:
+                        existing_data = json.load(file)
+                except json.JSONDecodeError:
+                    existing_data = {}
+                existing_data.update(data)
+            else:
+                existing_data = data
+
+            with open("passwords_" + account_username + ".json", "w") as file:
+                json.dump(existing_data, file, indent=4)
+
+            messagebox.showinfo("Success", "Password saved successfully!")
+            website_entry.delete(0, tk.END)
+            username_entry.delete(0, tk.END)
+            password_entry.delete(0, tk.END)
         else:
-            existing_data = data
-
-        with open("passwords_" + account_username + ".json", "w") as file:
-            json.dump(existing_data, file, indent=4)
-
-        messagebox.showinfo("Success", "Password saved successfully!")
-        website_entry.delete(0, tk.END)
-        username_entry.delete(0, tk.END)
-        password_entry.delete(0, tk.END)
-    else:
-        messagebox.showwarning("Input Error", "All fields are required.")
+            messagebox.showwarning("Input Error", "All fields are required.")
 
 # Function to copy a password to clipboard
 def copy_to_clipboard(password):
