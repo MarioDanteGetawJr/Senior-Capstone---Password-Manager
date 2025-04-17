@@ -1,61 +1,104 @@
 from Encryption import load_key, encrypt_password, decrypt_password
 import tkinter as tk
-from tkinter import messagebox, Toplevel
+from tkinter import messagebox, Toplevel, simpledialog
 import json
 import os
 import random
 import string
 import re
 
+#####################
+import pyotp
+import qrcode
+from PIL import Image, ImageTk
+import io
+#####################
+
 # Load the encryption key
 key = load_key()
 
 def check_pass_strength(password):
-    #Check if length of password is at least 8
     if(len(password) > 8):
-        #Check if the password contains at least 1 digit
         if (re.search(r"\d", password) is not None):
-            #Check if the password contains an upper case
             if (re.search(r"[A-Z]", password) is not None):
-                #Check if the password contains an lower case
                 if (re.search(r"[a-z]", password) is not None):
-                    #Check if the password contains a special character
                     if (re.search(r"\W", password) is not None):
                         return "pass"
     messagebox.showwarning("Password strength is too low", "Your password must be at least 8 characters long and must have 1 number, 1 upper case letter, 1 lower case letter, and one special character")
-
     return "fail"
 
 def on_closing():
     sign_in_window.destroy()
     window.destroy()
 
-def create_account():
-    username = master_username_entry.get()
-    password = master_password_entry.get()
+#####################
+def show_new_user_window():
+    new_user_window = Toplevel(sign_in_window)
+    new_user_window.title("New User Setup")
+    new_user_window.geometry("400x550")
 
-    if (check_pass_strength(password)=="pass"):
-        if username and password:
-            data = {username: password}
-            # data = {username: {"username": username, "password": password}}
+    instructions = (
+        "To use two-factor authentication (2FA):\n\n"
+        "1. After creating your account, a QR code will be displayed below.\n"
+        "2. Open your authenticator app (like Google Authenticator).\n"
+        "3. Tap 'Add Account' → 'Scan QR Code' and scan the code.\n"
+        "4. Use the 6-digit code shown in the app each time you sign in.\n"
+    )
+    tk.Label(new_user_window, text=instructions, wraplength=380, justify="left").pack(pady=10)
 
-            # Save to a local JSON file
-            if os.path.exists("passManagerAccounts.json"):
-                with open("passManagerAccounts.json", "r") as file:
-                    account_data = json.load(file)
-                    account_data.update(data)
+    tk.Label(new_user_window, text="New Account Username:").pack()
+    new_username_entry = tk.Entry(new_user_window, width=30)
+    new_username_entry.pack()
+
+    tk.Label(new_user_window, text="New Account Password:").pack()
+    new_password_entry = tk.Entry(new_user_window, width=30)
+    new_password_entry.pack()
+
+    def handle_create():
+        username = new_username_entry.get()
+        password = new_password_entry.get()
+
+        if check_pass_strength(password) == "pass":
+            if username and password:
+                secret = pyotp.random_base32()
+                totp = pyotp.TOTP(secret)
+                uri = totp.provisioning_uri(name=username, issuer_name="PassManager")
+
+                qr_img = qrcode.make(uri)
+                buffered = io.BytesIO()
+                qr_img.save(buffered, format="PNG")
+                qr_data = buffered.getvalue()
+                qr_photo = ImageTk.PhotoImage(Image.open(io.BytesIO(qr_data)))
+
+                qr_label = tk.Label(new_user_window, image=qr_photo)
+                qr_label.image = qr_photo
+                qr_label.pack(pady=10)
+
+                data = {username: {"password": password, "secret": secret}}
+                if os.path.exists("passManagerAccounts.json"):
+                    with open("passManagerAccounts.json", "r") as file:
+                        account_data = json.load(file)
+                        account_data.update(data)
+                else:
+                    account_data = data
+                with open("passManagerAccounts.json", "w") as file:
+                    json.dump(account_data, file, indent=4)
+
+                messagebox.showinfo("Success", "Account created! Scan the QR code with your authenticator app.")
+
+                def finish_setup():
+                    master_username_entry.delete(0, tk.END)
+                    master_password_entry.delete(0, tk.END)
+                    new_user_window.destroy()
+                    window.deiconify()
+                    sign_in_window.withdraw()
+
+                tk.Button(new_user_window, text="Continue to App", command=finish_setup).pack(pady=10)
             else:
-                account_data = data
-            with open("passManagerAccounts.json", "w") as file:
-                json.dump(account_data, file, indent=4)
+                messagebox.showwarning("Input Error", "All fields are required.")
 
-            messagebox.showinfo("Success", "Accout Created successfully!")
-            window.deiconify()
-            master_password_entry.delete(0, tk.END)
-            sign_in_window.withdraw()
-
-        else:
-            messagebox.showwarning("Input Error", "All fields are required.")
+    tk.Button(new_user_window, text="Create New Account", command=handle_create).pack(pady=15)
+#####################
 
 def sign_in():
     account_username = master_username_entry.get()
@@ -65,31 +108,30 @@ def sign_in():
     if os.path.exists("passManagerAccounts.json"):
         with open("passManagerAccounts.json", "r") as file:
             account_data = json.load(file)
-            for username, password in account_data.items():
-                if username == account_username and password == account_password:
+            for username, info in account_data.items():
+                if username == account_username and info["password"] == account_password:
+                    user_secret = info["secret"]
+                    totp = pyotp.TOTP(user_secret)
+                    code = simpledialog.askstring("2FA Code", "Enter the 6-digit code from your authenticator app:")
+                    if not code or not totp.verify(code):
+                        messagebox.showwarning("2FA Failed", "Invalid 2FA code.")
+                        return
+
                     window.deiconify()
                     sign_in_window.withdraw()   
                     not_valid = False
             if(not_valid):
                 messagebox.showwarning("Invalid Account", "Account does not exist, click Sign Up to create one with the current credentials.")
-
     else:
         messagebox.showwarning("Invalid Account", "Account does not exist, click Sign Up to create one with the current credentials.")
-
     master_password_entry.delete(0, tk.END)
 
-
-# generate a password
 def generate_password(length=12):
-    #Generates a random password with uppercase, numbers, and special characters.
     characters = string.ascii_letters + string.digits + string.punctuation
     password = "".join(random.choice(characters) for _ in range(length))
-    
-    # Insert generated password into the password entry field
     password_entry.delete(0, tk.END)
     password_entry.insert(0, password)
 
-# Function to save a password
 def save_password():
     website = website_entry.get()
     username = username_entry.get()
@@ -98,14 +140,12 @@ def save_password():
     encrypted_pw = encrypt_password(password, key)
 
     if (check_pass_strength(password) == "pass"):
-
         if website and username and password:
             data = {website: {"username": username, "password": encrypted_pw}}
-            
-            # Save to a local JSON file
-            if os.path.exists("passwords_" + account_username + ".json"):
+            file_path = "passwords_" + account_username + ".json"
+            if os.path.exists(file_path):
                 try:
-                    with open("passwords_" + account_username + ".json", "r") as file:
+                    with open(file_path, "r") as file:
                         existing_data = json.load(file)
                 except json.JSONDecodeError:
                     existing_data = {}
@@ -113,7 +153,7 @@ def save_password():
             else:
                 existing_data = data
 
-            with open("passwords_" + account_username + ".json", "w") as file:
+            with open(file_path, "w") as file:
                 json.dump(existing_data, file, indent=4)
 
             messagebox.showinfo("Success", "Password saved successfully!")
@@ -123,30 +163,28 @@ def save_password():
         else:
             messagebox.showwarning("Input Error", "All fields are required.")
 
-# Function to copy a password to clipboard
 def copy_to_clipboard(password):
-    #Copies the selected password to clipboard.
     window.clipboard_clear()
     window.clipboard_append(password)
     window.update()
     messagebox.showinfo("Copied", "Password copied to clipboard!")
 
-# Function to open a new window and display saved passwords
+#####################
 def view_passwords():
     account_username = master_username_entry.get()
-    #Opens a new window to display stored passwords.
-    if not os.path.exists("passwords_" + account_username + ".json"):
+    file_path = "passwords_" + account_username + ".json"
+
+    if not os.path.exists(file_path):
         messagebox.showwarning("No Data", "No passwords saved yet.")
         return
 
-    with open("passwords_" + account_username + ".json", "r") as file:
+    with open(file_path, "r") as file:
         saved_data = json.load(file)
 
     if not saved_data:
         messagebox.showwarning("No Data", "No passwords available.")
         return
 
-    # Create a new top-level window
     view_window = Toplevel(window)
     view_window.title("Saved Passwords")
     view_window.geometry("400x400")
@@ -159,15 +197,16 @@ def view_passwords():
         except Exception as e:
             decrypted_pw = "Error decrypting"
 
-        site_label = tk.Label(view_window, text=f"{website} - {credentials['username']}", font=("Arial", 10))
-        site_label.pack()
+        display_text = f"Website: {website}\nUsername: {credentials['username']}\nPassword: {decrypted_pw}"
+        label = tk.Label(view_window, text=display_text, justify="left", font=("Arial", 10))
+        label.pack(pady=5)
 
         copy_btn = tk.Button(view_window, text="Copy Password", command=lambda pw=decrypted_pw: copy_to_clipboard(pw))
         copy_btn.pack(pady=2)
 
     tk.Button(view_window, text="Close", command=view_window.destroy).pack(pady=10)
+#####################
 
-# Initialize main window
 sign_in_window = tk.Tk()
 sign_in_window.title("Sign In")
 sign_in_window.geometry("400x400")
@@ -181,7 +220,10 @@ tk.Label(sign_in_window, text="Password:").pack()
 master_password_entry = tk.Entry(sign_in_window, width=30)
 master_password_entry.pack()
 
-tk.Button(sign_in_window, text="Create Account", command=create_account).pack(pady=5)
+#####################
+tk.Button(sign_in_window, text="New User?", command=show_new_user_window).pack(pady=5)
+#####################
+
 tk.Button(sign_in_window, text="Sign In", command=sign_in).pack(pady=5)
 
 window = tk.Tk()
@@ -189,7 +231,6 @@ window.title("Password Manager")
 window.geometry("400x400")
 window.protocol("WM_DELETE_WINDOW", on_closing)
 
-# GUI Layout
 tk.Label(window, text="Website:").pack()
 website_entry = tk.Entry(window, width=30)
 website_entry.pack()
@@ -202,11 +243,9 @@ tk.Label(window, text="Password:").pack()
 password_entry = tk.Entry(window, show="*", width=30)
 password_entry.pack()
 
-# Buttons for saving, generating, and viewing passwords
 tk.Button(window, text="Save Password", command=save_password).pack(pady=5)
 tk.Button(window, text="Generate Password", command=generate_password).pack(pady=5)
 tk.Button(window, text="View Saved Passwords", command=view_passwords).pack(pady=5)
 
 window.withdraw()
-
 window.mainloop()
