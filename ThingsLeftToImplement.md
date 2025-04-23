@@ -7,4 +7,6 @@
 
 - If time permits:
   - Add cloud functionality.
+      - forgot password button/option (for the main account that controls everything)
   - Make the GUI more visually appealing.
+    
