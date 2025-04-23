@@ -7,6 +7,6 @@
 
 - If time permits:
   - Add cloud functionality.
-      - forgot password button/option (for the main account that controls everything)
+      - this also applies to possibly adding a forgot password button/option (for the main menu)
   - Make the GUI more visually appealing.
     
