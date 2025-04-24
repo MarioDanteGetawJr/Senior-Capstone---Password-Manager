@@ -1,4 +1,6 @@
 from Encryption import load_key, encrypt_password, decrypt_password
+from cloud_sync import upload_to_drive, download_from_drive
+
 import tkinter as tk
 from tkinter import messagebox, Toplevel, simpledialog
 import json
@@ -6,13 +8,10 @@ import os
 import random
 import string
 import re
-
-#####################
 import pyotp
 import qrcode
 from PIL import Image, ImageTk
 import io
-#####################
 
 # Load the encryption key
 key = load_key()
@@ -31,7 +30,6 @@ def on_closing():
     sign_in_window.destroy()
     window.destroy()
 
-#####################
 def show_new_user_window():
     new_user_window = Toplevel(sign_in_window)
     new_user_window.title("New User Setup")
@@ -98,11 +96,11 @@ def show_new_user_window():
                 messagebox.showwarning("Input Error", "All fields are required.")
 
     tk.Button(new_user_window, text="Create New Account", command=handle_create).pack(pady=15)
-#####################
 
 def sign_in():
     account_username = master_username_entry.get()
     account_password = master_password_entry.get()
+    file_path = "passwords_" + account_username + ".json"
 
     not_valid = True
     if os.path.exists("passManagerAccounts.json"):
@@ -117,10 +115,17 @@ def sign_in():
                         messagebox.showwarning("2FA Failed", "Invalid 2FA code.")
                         return
 
+                    if not os.path.exists(file_path):
+                        restore = messagebox.askyesno("Restore?", "No local password file found. Restore from Google Drive?")
+                        if restore:
+                            success = download_from_drive(file_path, file_path)
+                            if not success:
+                                messagebox.showwarning("Restore Failed", "No backup found on Google Drive.")
+
                     window.deiconify()
-                    sign_in_window.withdraw()   
+                    sign_in_window.withdraw()
                     not_valid = False
-            if(not_valid):
+            if not_valid:
                 messagebox.showwarning("Invalid Account", "Account does not exist, click Sign Up to create one with the current credentials.")
     else:
         messagebox.showwarning("Invalid Account", "Account does not exist, click Sign Up to create one with the current credentials.")
@@ -139,7 +144,7 @@ def save_password():
     password = password_entry.get()
     encrypted_pw = encrypt_password(password, key)
 
-    if (check_pass_strength(password) == "pass"):
+    if check_pass_strength(password) == "pass":
         if website and username and password:
             data = {website: {"username": username, "password": encrypted_pw}}
             file_path = "passwords_" + account_username + ".json"
@@ -156,6 +161,12 @@ def save_password():
             with open(file_path, "w") as file:
                 json.dump(existing_data, file, indent=4)
 
+            try:
+                upload_to_drive(file_path, file_path)
+                messagebox.showinfo("Cloud Backup", "✅ Cloud backup was successful.")
+            except Exception as e:
+                messagebox.showwarning("Cloud Backup Failed", f"❌ Cloud backup failed.\n{str(e)}")
+
             messagebox.showinfo("Success", "Password saved successfully!")
             website_entry.delete(0, tk.END)
             username_entry.delete(0, tk.END)
@@ -169,7 +180,6 @@ def copy_to_clipboard(password):
     window.update()
     messagebox.showinfo("Copied", "Password copied to clipboard!")
 
-#####################
 def view_passwords():
     account_username = master_username_entry.get()
     file_path = "passwords_" + account_username + ".json"
@@ -194,7 +204,7 @@ def view_passwords():
     for website, credentials in saved_data.items():
         try:
             decrypted_pw = decrypt_password(credentials["password"], key)
-        except Exception as e:
+        except Exception:
             decrypted_pw = "Error decrypting"
 
         display_text = f"Website: {website}\nUsername: {credentials['username']}\nPassword: {decrypted_pw}"
@@ -205,8 +215,8 @@ def view_passwords():
         copy_btn.pack(pady=2)
 
     tk.Button(view_window, text="Close", command=view_window.destroy).pack(pady=10)
-#####################
 
+# GUI setup
 sign_in_window = tk.Tk()
 sign_in_window.title("Sign In")
 sign_in_window.geometry("400x400")
@@ -220,10 +230,7 @@ tk.Label(sign_in_window, text="Password:").pack()
 master_password_entry = tk.Entry(sign_in_window, width=30)
 master_password_entry.pack()
 
-#####################
 tk.Button(sign_in_window, text="New User?", command=show_new_user_window).pack(pady=5)
-#####################
-
 tk.Button(sign_in_window, text="Sign In", command=sign_in).pack(pady=5)
 
 window = tk.Tk()
