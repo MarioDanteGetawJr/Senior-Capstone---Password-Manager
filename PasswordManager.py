@@ -1,31 +1,30 @@
 import sys
 import os
-
-def resource_path(relative_path):
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
-
-from Encryption import load_key, encrypt_password, decrypt_password
-from cloud_sync import upload_to_drive, download_from_drive
-
-import tkinter as tk
-from tkinter import messagebox, Toplevel, simpledialog
 import json
-import os
 import random
 import string
 import re
 import pyotp
 import qrcode
 from PIL import Image, ImageTk
+import tkinter as tk
+from tkinter import messagebox, Toplevel, simpledialog
+from Encryption import load_key, encrypt_password, decrypt_password
+from cloud_sync import upload_to_drive, download_from_drive
+import io
 
 def local_path(filename):
-    import sys, os
-    # Always save/load in the real folder where the exe runs from
     return os.path.join(os.path.dirname(sys.executable if hasattr(sys, '_MEIPASS') else __file__), filename)
 
-import io
+# Restore encryption key from cloud if missing
+key_path = local_path("password_manager.key")
+if not os.path.exists(key_path):
+    try:
+        restored = download_from_drive("password_manager.key", key_path)
+        if not restored:
+            print("No key backup found on Google Drive.")
+    except Exception as e:
+        print("Key restore failed:", e)
 
 # Load the encryption key
 key = load_key()
@@ -99,9 +98,9 @@ def show_new_user_window():
 
                 try:
                     upload_to_drive(local_path("passManagerAccounts.json"), "passManagerAccounts.json")
+                    upload_to_drive(local_path("password_manager.key"), "password_manager.key")
                 except Exception as e:
                     print("Account backup failed:", e)
-
 
                 messagebox.showinfo("Success", "Account created! Scan the QR code with your authenticator app.")
 
@@ -129,32 +128,35 @@ def sign_in():
 
     account_username = master_username_entry.get()
     account_password = master_password_entry.get()
-    file_path = resource_path(resource_path("passwords_" + account_username + ".json"))
+    file_path = local_path("passwords_" + account_username + ".json")
 
     not_valid = True
     if os.path.exists(local_path("passManagerAccounts.json")):
         with open(local_path("passManagerAccounts.json"), "r") as file:
             account_data = json.load(file)
             for username, info in account_data.items():
-                decrypted_pw = decrypt_password(info["password"], key)
-                if username == account_username and decrypted_pw == account_password:
-                    user_secret = info["secret"]
-                    totp = pyotp.TOTP(user_secret)
-                    code = simpledialog.askstring("2FA Code", "Enter the 6-digit code from your authenticator app:")
-                    if not code or not totp.verify(code):
-                        messagebox.showwarning("2FA Failed", "Invalid 2FA code.")
-                        return
+                try:
+                    decrypted_pw = decrypt_password(info["password"], key)
+                    if username == account_username and decrypted_pw == account_password:
+                        user_secret = info["secret"]
+                        totp = pyotp.TOTP(user_secret)
+                        code = simpledialog.askstring("2FA Code", "Enter the 6-digit code from your authenticator app:")
+                        if not code or not totp.verify(code):
+                            messagebox.showwarning("2FA Failed", "Invalid 2FA code.")
+                            return
 
-                    if not os.path.exists(file_path):
-                        restore = messagebox.askyesno("Restore?", "No local password file found. Restore from Google Drive?")
-                        if restore:
-                            success = download_from_drive(file_path, file_path)
-                            if not success:
-                                messagebox.showwarning("Restore Failed", "No backup found on Google Drive.")
+                        if not os.path.exists(file_path):
+                            restore = messagebox.askyesno("Restore?", "No local password file found. Restore from Google Drive?")
+                            if restore:
+                                success = download_from_drive(file_path, file_path)
+                                if not success:
+                                    messagebox.showwarning("Restore Failed", "No backup found on Google Drive.")
 
-                    window.deiconify()
-                    sign_in_window.withdraw()
-                    not_valid = False
+                        window.deiconify()
+                        sign_in_window.withdraw()
+                        not_valid = False
+                except:
+                    pass
             if not_valid:
                 messagebox.showwarning("Invalid Account", "Account does not exist, click Sign Up to create one with the current credentials.")
     else:
@@ -177,7 +179,7 @@ def save_password():
     if check_pass_strength(password) == "pass":
         if website and username and password:
             data = {website: {"username": username, "password": encrypted_pw}}
-            file_path = resource_path(resource_path("passwords_" + account_username + ".json"))
+            file_path = local_path("passwords_" + account_username + ".json")
             if os.path.exists(file_path):
                 try:
                     with open(file_path, "r") as file:
@@ -212,7 +214,7 @@ def copy_to_clipboard(password):
 
 def view_passwords():
     account_username = master_username_entry.get()
-    file_path = resource_path(resource_path("passwords_" + account_username + ".json"))
+    file_path = local_path("passwords_" + account_username + ".json")
 
     if not os.path.exists(file_path):
         messagebox.showwarning("No Data", "No passwords saved yet.")
