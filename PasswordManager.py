@@ -1,3 +1,11 @@
+import sys
+import os
+
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
 from Encryption import load_key, encrypt_password, decrypt_password
 from cloud_sync import upload_to_drive, download_from_drive
 
@@ -11,6 +19,12 @@ import re
 import pyotp
 import qrcode
 from PIL import Image, ImageTk
+
+def local_path(filename):
+    import sys, os
+    # Always save/load in the real folder where the exe runs from
+    return os.path.join(os.path.dirname(sys.executable if hasattr(sys, '_MEIPASS') else __file__), filename)
+
 import io
 
 # Load the encryption key
@@ -72,15 +86,22 @@ def show_new_user_window():
                 qr_label.image = qr_photo
                 qr_label.pack(pady=10)
 
-                data = {username: {"password": password, "secret": secret}}
-                if os.path.exists("passManagerAccounts.json"):
-                    with open("passManagerAccounts.json", "r") as file:
+                encrypted_pw = encrypt_password(password, key)
+                data = {username: {"password": encrypted_pw, "secret": secret}}
+                if os.path.exists(local_path("passManagerAccounts.json")):
+                    with open(local_path("passManagerAccounts.json"), "r") as file:
                         account_data = json.load(file)
                         account_data.update(data)
                 else:
                     account_data = data
-                with open("passManagerAccounts.json", "w") as file:
+                with open(local_path("passManagerAccounts.json"), "w") as file:
                     json.dump(account_data, file, indent=4)
+
+                try:
+                    upload_to_drive(local_path("passManagerAccounts.json"), "passManagerAccounts.json")
+                except Exception as e:
+                    print("Account backup failed:", e)
+
 
                 messagebox.showinfo("Success", "Account created! Scan the QR code with your authenticator app.")
 
@@ -98,16 +119,25 @@ def show_new_user_window():
     tk.Button(new_user_window, text="Create New Account", command=handle_create).pack(pady=15)
 
 def sign_in():
+    account_file = local_path("passManagerAccounts.json")
+    if not os.path.exists(account_file):
+        restore = messagebox.askyesno("Restore Accounts?", "No local account file found. Restore from Google Drive?")
+        if restore:
+            success = download_from_drive("passManagerAccounts.json", account_file)
+            if not success:
+                messagebox.showwarning("Restore Failed", "No account backup found on Google Drive.")
+
     account_username = master_username_entry.get()
     account_password = master_password_entry.get()
-    file_path = "passwords_" + account_username + ".json"
+    file_path = resource_path(resource_path("passwords_" + account_username + ".json"))
 
     not_valid = True
-    if os.path.exists("passManagerAccounts.json"):
-        with open("passManagerAccounts.json", "r") as file:
+    if os.path.exists(local_path("passManagerAccounts.json")):
+        with open(local_path("passManagerAccounts.json"), "r") as file:
             account_data = json.load(file)
             for username, info in account_data.items():
-                if username == account_username and info["password"] == account_password:
+                decrypted_pw = decrypt_password(info["password"], key)
+                if username == account_username and decrypted_pw == account_password:
                     user_secret = info["secret"]
                     totp = pyotp.TOTP(user_secret)
                     code = simpledialog.askstring("2FA Code", "Enter the 6-digit code from your authenticator app:")
@@ -147,7 +177,7 @@ def save_password():
     if check_pass_strength(password) == "pass":
         if website and username and password:
             data = {website: {"username": username, "password": encrypted_pw}}
-            file_path = "passwords_" + account_username + ".json"
+            file_path = resource_path(resource_path("passwords_" + account_username + ".json"))
             if os.path.exists(file_path):
                 try:
                     with open(file_path, "r") as file:
@@ -182,7 +212,7 @@ def copy_to_clipboard(password):
 
 def view_passwords():
     account_username = master_username_entry.get()
-    file_path = "passwords_" + account_username + ".json"
+    file_path = resource_path(resource_path("passwords_" + account_username + ".json"))
 
     if not os.path.exists(file_path):
         messagebox.showwarning("No Data", "No passwords saved yet.")
