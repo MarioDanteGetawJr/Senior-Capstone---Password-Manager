@@ -4,7 +4,7 @@
 - Created by Mario Getaw, Jarrett Wilson, and Joshua Moore. 
 - The goal for this project was to combine Computer Science and Cybersecurity principles to create something that anyone can use - and we chose to create a password manager in Python
 
-# How to use our program 
+# How To Use Our Program: 
 a) **PREREQUISITE** - must be an approved test user because the app is not published.
 
 1) Download the zip file from the releases page (v4.0.0)
