@@ -1,290 +1,252 @@
-import sys
-import os
-import json
-import random
-import string
-import re
-import pyotp
-import qrcode
-from PIL import Image, ImageTk
+import os, sys, json, random, string, re
 import tkinter as tk
 from tkinter import messagebox, Toplevel, simpledialog
+from PIL import Image, ImageTk
+import qrcode, pyotp
+
+# ─── run-from-EXE convenience ────────────────────────────────────────────────
+# When frozen with PyInstaller, switch the working directory to the folder
+# that holds PasswordManager.exe so every file we create lands beside it.
+if getattr(sys, "frozen", False):
+    os.chdir(os.path.dirname(sys.executable))
+
+# ─── local modules ───────────────────────────────────────────────────────────
 from Encryption import load_key, encrypt_password, decrypt_password
-from cloud_sync import upload_to_drive, download_from_drive
-import io
+from cloud_sync import upload_to_drive, download_from_drive, get_authenticated_drive
 
-def local_path(filename):
-    return os.path.join(os.path.dirname(sys.executable if hasattr(sys, '_MEIPASS') else __file__), filename)
+# ─── globals ─────────────────────────────────────────────────────────────────
+cloud_drive = None                    # reused Google Drive handle this session
 
-# Restore encryption key from cloud if missing
-key_path = local_path("password_manager.key")
-if not os.path.exists(key_path):
-    try:
-        restored = download_from_drive("password_manager.key", key_path)
-        if not restored:
-            print("No key backup found on Google Drive.")
-    except Exception as e:
-        print("Key restore failed:", e)
+def local_path(fname: str) -> str:
+    """
+    Persistent, writable path for *fname*:
+    • Frozen app → same folder as the .exe
+    • Dev run    → current working directory
+    """
+    base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.abspath(".")
+    return os.path.join(base, fname)
 
-# Load the encryption key
-key = load_key()
-
-def check_pass_strength(password):
-    if(len(password) > 8):
-        if (re.search(r"\d", password) is not None):
-            if (re.search(r"[A-Z]", password) is not None):
-                if (re.search(r"[a-z]", password) is not None):
-                    if (re.search(r"\W", password) is not None):
-                        return "pass"
-    messagebox.showwarning("Password strength is too low", "Your password must be at least 8 characters long and must have 1 number, 1 upper case letter, 1 lower case letter, and one special character")
+# ─── helpers ─────────────────────────────────────────────────────────────────
+def check_pass_strength(pw: str) -> str:
+    if (len(pw) >= 8 and
+        re.search(r"\d", pw) and
+        re.search(r"[A-Z]", pw) and
+        re.search(r"[a-z]", pw) and
+        re.search(r"\W", pw)):
+        return "pass"
+    messagebox.showwarning(
+        "Weak Password",
+        "Password must be 8+ chars and include upper/lowercase letters, a number, and a symbol."
+    )
     return "fail"
+
+def copy_to_clipboard(text: str) -> None:
+    window.clipboard_clear()
+    window.clipboard_append(text)
+    window.update()
+    messagebox.showinfo("Copied", "Password copied to clipboard.")
 
 def on_closing():
     sign_in_window.destroy()
     window.destroy()
 
+# ─── new-user flow ───────────────────────────────────────────────────────────
 def show_new_user_window():
     new_user_window = Toplevel(sign_in_window)
     new_user_window.title("New User Setup")
-    new_user_window.geometry("400x550")
+    new_user_window.geometry("500x650")
 
     instructions = (
         "To use two-factor authentication (2FA):\n\n"
         "1. After creating your account, a QR code will be displayed below.\n"
-        "2. Open your authenticator app (like Google Authenticator).\n"
+        "2. Open your authenticator app (Google Authenticator, Authy, etc.).\n"
         "3. Tap 'Add Account' → 'Scan QR Code' and scan the code.\n"
-        "4. Use the 6-digit code shown in the app each time you sign in.\n"
+        "4. Use the 6-digit code shown in the app each time you sign in."
     )
-    tk.Label(new_user_window, text=instructions, wraplength=380, justify="left").pack(pady=10)
+    tk.Label(new_user_window, text=instructions, justify="left",
+             anchor="w", wraplength=480).pack(padx=10, pady=(10, 20))
 
     tk.Label(new_user_window, text="New Account Username:").pack()
-    new_username_entry = tk.Entry(new_user_window, width=30)
+    new_username_entry = tk.Entry(new_user_window, width=40)
     new_username_entry.pack()
 
-    tk.Label(new_user_window, text="New Account Password:").pack()
-    new_password_entry = tk.Entry(new_user_window, width=30)
+    tk.Label(new_user_window, text="New Account Password:").pack(pady=(10, 0))
+    new_password_entry = tk.Entry(new_user_window, width=40, show="*")
     new_password_entry.pack()
 
+    # ── handler ──────────────────────────────────────────────────────────────
     def handle_create():
-        username = new_username_entry.get()
-        password = new_password_entry.get()
+        global cloud_drive
+        username = new_username_entry.get().strip()
+        password = new_password_entry.get().strip()
+        if not username or not password or check_pass_strength(password) != "pass":
+            return
 
-        if check_pass_strength(password) == "pass":
-            if username and password:
-                secret = pyotp.random_base32()
-                totp = pyotp.TOTP(secret)
-                uri = totp.provisioning_uri(name=username, issuer_name="PassManager")
+        # TOTP secret + larger QR (box_size 10 ≈360 px) fits window fully
+        secret = pyotp.random_base32()
+        uri = pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name="PassManager")
+        qr = qrcode.QRCode(box_size=8, border=4)
+        qr.add_data(uri); qr.make(fit=True)
+        qr_img   = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        qr_photo = ImageTk.PhotoImage(qr_img)
+        qr_lbl   = tk.Label(new_user_window, image=qr_photo)
+        qr_lbl.pack(pady=15)
+        new_user_window.qr_photo = qr_photo       # keep reference
 
-                qr_img = qrcode.make(uri)
-                buffered = io.BytesIO()
-                qr_img.save(buffered, format="PNG")
-                qr_data = buffered.getvalue()
-                qr_photo = ImageTk.PhotoImage(Image.open(io.BytesIO(qr_data)))
+        # save account locally
+        key = load_key()
+        enc_pw = encrypt_password(password, key)
+        acct_path = local_path("passManagerAccounts.json")
+        data = {}
+        if os.path.exists(acct_path):
+            with open(acct_path, "r") as f: data = json.load(f)
+        data[username] = {"password": enc_pw, "secret": secret}
+        with open(acct_path, "w") as f: json.dump(data, f, indent=4)
 
-                qr_label = tk.Label(new_user_window, image=qr_photo)
-                qr_label.image = qr_photo
-                qr_label.pack(pady=10)
+        # create empty user passwords file
+        pw_file = local_path(f"passwords_{username}.json")
+        if not os.path.exists(pw_file):
+            with open(pw_file, "w") as f: json.dump({}, f)
 
-                encrypted_pw = encrypt_password(password, key)
-                data = {username: {"password": encrypted_pw, "secret": secret}}
-                if os.path.exists(local_path("passManagerAccounts.json")):
-                    with open(local_path("passManagerAccounts.json"), "r") as file:
-                        account_data = json.load(file)
-                        account_data.update(data)
-                else:
-                    account_data = data
-                with open(local_path("passManagerAccounts.json"), "w") as file:
-                    json.dump(account_data, file, indent=4)
+        # optional initial backup
+        if messagebox.askyesno("Enable Cloud Backup?",
+                               "Back up your account to Google Drive now?"):
+            cloud_drive = cloud_drive or get_authenticated_drive()
+            upload_to_drive(acct_path, "passManagerAccounts.json", cloud_drive)
+            upload_to_drive(pw_file,  f"passwords_{username}.json", cloud_drive)
+            upload_to_drive(local_path("password_manager.key"), "password_manager.key", cloud_drive)
 
-                try:
-                    upload_to_drive(local_path("passManagerAccounts.json"), "passManagerAccounts.json")
-                    upload_to_drive(local_path("password_manager.key"), "password_manager.key")
-                except Exception as e:
-                    print("Account backup failed:", e)
+        messagebox.showinfo(
+            "Account Created",
+            "Account created.\nSign in with your credentials and 6-digit code."
+        )
 
-                messagebox.showinfo("Success", "Account created! Scan the QR code with your authenticator app.")
+    tk.Button(new_user_window, text="Create New Account",
+              command=handle_create).pack(pady=25)
 
-                def finish_setup():
-                    master_username_entry.delete(0, tk.END)
-                    master_password_entry.delete(0, tk.END)
-                    new_user_window.destroy()
-                    window.deiconify()
-                    sign_in_window.withdraw()
-
-                tk.Button(new_user_window, text="Continue to App", command=finish_setup).pack(pady=10)
-            else:
-                messagebox.showwarning("Input Error", "All fields are required.")
-
-    tk.Button(new_user_window, text="Create New Account", command=handle_create).pack(pady=15)
-
+# ─── sign-in flow ────────────────────────────────────────────────────────────
 def sign_in():
-    account_file = local_path("passManagerAccounts.json")
-    if not os.path.exists(account_file):
-        restore = messagebox.askyesno("Restore Accounts?", "No local account file found. Restore from Google Drive?")
-        if restore:
-            success = download_from_drive("passManagerAccounts.json", account_file)
-            if not success:
-                messagebox.showwarning("Restore Failed", "No account backup found on Google Drive.")
+    global cloud_drive
+    uname = master_username_entry.get().strip()
+    pw    = master_password_entry.get().strip()
+    acct_path = local_path("passManagerAccounts.json")
+    pw_file   = local_path(f"passwords_{uname}.json")
 
-    account_username = master_username_entry.get()
-    account_password = master_password_entry.get()
-    file_path = local_path("passwords_" + account_username + ".json")
+    # restore missing files
+    if not os.path.exists(acct_path) and \
+       messagebox.askyesno("Restore?", "No local account file found. Restore from cloud?"):
+        cloud_drive = cloud_drive or get_authenticated_drive()
+        download_from_drive("passManagerAccounts.json", acct_path, cloud_drive)
 
-    not_valid = True
-    if os.path.exists(local_path("passManagerAccounts.json")):
-        with open(local_path("passManagerAccounts.json"), "r") as file:
-            account_data = json.load(file)
-            for username, info in account_data.items():
-                try:
-                    decrypted_pw = decrypt_password(info["password"], key)
-                    if username == account_username and decrypted_pw == account_password:
-                        user_secret = info["secret"]
-                        totp = pyotp.TOTP(user_secret)
-                        code = simpledialog.askstring("2FA Code", "Enter the 6-digit code from your authenticator app:")
-                        if not code or not totp.verify(code):
-                            messagebox.showwarning("2FA Failed", "Invalid 2FA code.")
-                            return
+    if not os.path.exists(local_path("password_manager.key")) and \
+       messagebox.askyesno("Restore?", "Key file missing. Restore from cloud?"):
+        cloud_drive = cloud_drive or get_authenticated_drive()
+        download_from_drive("password_manager.key", local_path("password_manager.key"), cloud_drive)
+    key = load_key()
 
-                        if not os.path.exists(file_path):
-                            restore = messagebox.askyesno("Restore?", "No local password file found. Restore from Google Drive?")
-                            if restore:
-                                success = download_from_drive(file_path, file_path)
-                                if not success:
-                                    messagebox.showwarning("Restore Failed", "No backup found on Google Drive.")
+    try:
+        with open(acct_path, "r") as f: accts = json.load(f)
+        decrypted = decrypt_password(accts[uname]["password"], key)
+        if decrypted != pw:
+            raise ValueError
+    except Exception:
+        messagebox.showwarning("Login Failed", "Invalid username or password.")
+        return
 
-                        window.deiconify()
-                        sign_in_window.withdraw()
-                        not_valid = False
-                except:
-                    pass
-            if not_valid:
-                messagebox.showwarning("Invalid Account", "Account does not exist, click Sign Up to create one with the current credentials.")
-    else:
-        messagebox.showwarning("Invalid Account", "Account does not exist, click Sign Up to create one with the current credentials.")
-    master_password_entry.delete(0, tk.END)
+    # MFA
+    totp = pyotp.TOTP(accts[uname]["secret"])
+    code = simpledialog.askstring("2FA Code", "Enter the 6-digit code:")
+    if not code or not totp.verify(code):
+        messagebox.showwarning("2FA Failed", "Invalid 2-factor code.")
+        return
 
-def generate_password(length=12):
-    characters = string.ascii_letters + string.digits + string.punctuation
-    password = "".join(random.choice(characters) for _ in range(length))
+    # optional restore of user passwords file
+    if not os.path.exists(pw_file) and \
+       messagebox.askyesno("Restore?", "No password file found. Restore from cloud?"):
+        cloud_drive = cloud_drive or get_authenticated_drive()
+        download_from_drive(f"passwords_{uname}.json", pw_file, cloud_drive)
+
+    window.deiconify(); sign_in_window.withdraw()
+
+# ─── password actions ────────────────────────────────────────────────────────
+def generate_password(length: int = 12):
+    chars = string.ascii_letters + string.digits + string.punctuation
     password_entry.delete(0, tk.END)
-    password_entry.insert(0, password)
+    password_entry.insert(0, ''.join(random.choice(chars) for _ in range(length)))
 
 def save_password():
-    website = website_entry.get()
-    username = username_entry.get()
-    account_username = master_username_entry.get()
-    password = password_entry.get()
-    encrypted_pw = encrypt_password(password, key)
-
-    if check_pass_strength(password) == "pass":
-        if website and username and password:
-            data = {website: {"username": username, "password": encrypted_pw}}
-            file_path = local_path("passwords_" + account_username + ".json")
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, "r") as file:
-                        existing_data = json.load(file)
-                except json.JSONDecodeError:
-                    existing_data = {}
-                existing_data.update(data)
-            else:
-                existing_data = data
-
-            with open(file_path, "w") as file:
-                json.dump(existing_data, file, indent=4)
-
-            try:
-                upload_to_drive(file_path, file_path)
-                messagebox.showinfo("Cloud Backup", "✅ Cloud backup was successful.")
-            except Exception as e:
-                messagebox.showwarning("Cloud Backup Failed", f"❌ Cloud backup failed.\n{str(e)}")
-
-            messagebox.showinfo("Success", "Password saved successfully!")
-            website_entry.delete(0, tk.END)
-            username_entry.delete(0, tk.END)
-            password_entry.delete(0, tk.END)
-        else:
-            messagebox.showwarning("Input Error", "All fields are required.")
-
-def copy_to_clipboard(password):
-    window.clipboard_clear()
-    window.clipboard_append(password)
-    window.update()
-    messagebox.showinfo("Copied", "Password copied to clipboard!")
+    site  = website_entry.get().strip()
+    user  = username_entry.get().strip()
+    pw    = password_entry.get().strip()
+    owner = master_username_entry.get().strip()
+    if not (site and user and pw) or check_pass_strength(pw) != "pass":
+        return
+    key = load_key()
+    enc_pw = encrypt_password(pw, key)
+    pw_file = local_path(f"passwords_{owner}.json")
+    data = {}
+    if os.path.exists(pw_file):
+        with open(pw_file, "r") as f: data = json.load(f)
+    data[site] = {"username": user, "password": enc_pw}
+    with open(pw_file, "w") as f: json.dump(data, f, indent=4)
+    messagebox.showinfo("Saved", "Password saved.")
+    website_entry.delete(0, tk.END); username_entry.delete(0, tk.END); password_entry.delete(0, tk.END)
 
 def view_passwords():
-    account_username = master_username_entry.get()
-    file_path = local_path("passwords_" + account_username + ".json")
+    owner = master_username_entry.get().strip()
+    pw_file = local_path(f"passwords_{owner}.json")
+    if not os.path.exists(pw_file):
+        messagebox.showwarning("No Data", "No passwords saved yet."); return
+    with open(pw_file, "r") as f: data = json.load(f)
+    if not data:
+        messagebox.showwarning("No Data", "No passwords saved yet."); return
+    vw = Toplevel(window); vw.title("Saved Passwords"); vw.geometry("400x400")
+    key = load_key()
+    for site, cred in data.items():
+        try: dec = decrypt_password(cred["password"], key)
+        except: dec = "Error decrypting"
+        tk.Label(vw, text=f"Website: {site}\nUsername: {cred['username']}\nPassword: {dec}",
+                 justify="left").pack(pady=4)
+        tk.Button(vw, text="Copy", command=lambda p=dec: copy_to_clipboard(p)).pack()
 
-    if not os.path.exists(file_path):
-        messagebox.showwarning("No Data", "No passwords saved yet.")
-        return
+def save_to_cloud():
+    global cloud_drive
+    owner = master_username_entry.get().strip()
+    acct_path = local_path("passManagerAccounts.json")
+    pw_file   = local_path(f"passwords_{owner}.json")
+    key_file  = local_path("password_manager.key")
+    if not os.path.exists(pw_file):
+        messagebox.showwarning("No File", "No password file to upload."); return
+    try:
+        cloud_drive = cloud_drive or get_authenticated_drive()
+        upload_to_drive(acct_path, "passManagerAccounts.json", cloud_drive)
+        upload_to_drive(pw_file,   f"passwords_{owner}.json", cloud_drive)
+        upload_to_drive(key_file,  "password_manager.key",     cloud_drive)
+        messagebox.showinfo("Uploaded", "Files backed up to cloud.")
+    except Exception as e:
+        messagebox.showwarning("Backup Failed", str(e))
 
-    with open(file_path, "r") as file:
-        saved_data = json.load(file)
-
-    if not saved_data:
-        messagebox.showwarning("No Data", "No passwords available.")
-        return
-
-    view_window = Toplevel(window)
-    view_window.title("Saved Passwords")
-    view_window.geometry("400x400")
-
-    tk.Label(view_window, text="Saved Passwords", font=("Arial", 14, "bold")).pack(pady=5)
-
-    for website, credentials in saved_data.items():
-        try:
-            decrypted_pw = decrypt_password(credentials["password"], key)
-        except Exception:
-            decrypted_pw = "Error decrypting"
-
-        display_text = f"Website: {website}\nUsername: {credentials['username']}\nPassword: {decrypted_pw}"
-        label = tk.Label(view_window, text=display_text, justify="left", font=("Arial", 10))
-        label.pack(pady=5)
-
-        copy_btn = tk.Button(view_window, text="Copy Password", command=lambda pw=decrypted_pw: copy_to_clipboard(pw))
-        copy_btn.pack(pady=2)
-
-    tk.Button(view_window, text="Close", command=view_window.destroy).pack(pady=10)
-
-# GUI setup
-sign_in_window = tk.Tk()
-sign_in_window.title("Sign In")
-sign_in_window.geometry("400x400")
+# ─── GUI ─────────────────────────────────────────────────────────────────────
+sign_in_window = tk.Tk(); sign_in_window.title("Sign In"); sign_in_window.geometry("400x400")
 sign_in_window.protocol("WM_DELETE_WINDOW", on_closing)
-
 tk.Label(sign_in_window, text="Username:").pack()
-master_username_entry = tk.Entry(sign_in_window, width=30)
-master_username_entry.pack()
-
+master_username_entry = tk.Entry(sign_in_window, width=30); master_username_entry.pack()
 tk.Label(sign_in_window, text="Password:").pack()
-master_password_entry = tk.Entry(sign_in_window, width=30)
-master_password_entry.pack()
-
+master_password_entry = tk.Entry(sign_in_window, width=30, show="*"); master_password_entry.pack()
 tk.Button(sign_in_window, text="New User?", command=show_new_user_window).pack(pady=5)
 tk.Button(sign_in_window, text="Sign In", command=sign_in).pack(pady=5)
 
-window = tk.Tk()
-window.title("Password Manager")
-window.geometry("400x400")
+window = tk.Toplevel(); window.withdraw(); window.title("Password Manager"); window.geometry("400x400")
 window.protocol("WM_DELETE_WINDOW", on_closing)
-
 tk.Label(window, text="Website:").pack()
-website_entry = tk.Entry(window, width=30)
-website_entry.pack()
-
+website_entry = tk.Entry(window, width=30); website_entry.pack()
 tk.Label(window, text="Username/Email:").pack()
-username_entry = tk.Entry(window, width=30)
-username_entry.pack()
-
+username_entry = tk.Entry(window, width=30); username_entry.pack()
 tk.Label(window, text="Password:").pack()
-password_entry = tk.Entry(window, show="*", width=30)
-password_entry.pack()
+password_entry = tk.Entry(window, width=30, show="*"); password_entry.pack()
+tk.Button(window, text="Save Password",           command=save_password).pack(pady=5)
+tk.Button(window, text="Generate Password",       command=generate_password).pack(pady=5)
+tk.Button(window, text="View Saved Passwords",    command=view_passwords).pack(pady=5)
+tk.Button(window, text="Upload Passwords to Cloud", command=save_to_cloud).pack(pady=5)
 
-tk.Button(window, text="Save Password", command=save_password).pack(pady=5)
-tk.Button(window, text="Generate Password", command=generate_password).pack(pady=5)
-tk.Button(window, text="View Saved Passwords", command=view_passwords).pack(pady=5)
-
-window.withdraw()
 window.mainloop()
