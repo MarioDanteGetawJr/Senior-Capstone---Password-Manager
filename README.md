@@ -13,4 +13,7 @@ a) **PREREQUISITE** - must be an approved test user because the app is not publi
 4) **HIGHLY RECOMMENDED** - Password lock and/or hide the folder with the program - the more layers of security, the better!
 
 - **NOTE!!** If you run the raw Python code, it is highly likely that the app will not work properly! Since the app is not public, PasswordManager.py needs access to the client_secrets.json file. The .exe file in the V4.0.0 release will also not run without the client_secrets.json file.
+
+- [![Watch the tutorial](https://img.youtube.com/vi/nmmg0FCCxII/hqdefault.jpg)](https://youtu.be/nmmg0FCCxII)
+
   
